@@ -116,8 +116,10 @@ if __name__ == "__main__":
     #    Esperamos alarmaMedia, escalamiento a critica y bomba detenida. La
     #    alarma critica se repite (a los 30 s y luego cada 10 s) hasta que el
     #    enfermero confirma a los 55 s, lo que ademas libera el bloqueo.
+    #    Se usa hasta=70 para dejar margen tras la confirmacion (a los 55 s)
+    #    y verificar que no se emiten mas repeticiones despues de ella.
     correr("Escenario 2 - Desvio sostenido y alarma critica",
-           agenda=[(100, 2)], confirmaciones=[55], falla=0.5, hasta=65)
+           agenda=[(100, 2)], confirmaciones=[55], falla=0.5, hasta=70)
 
     # 3) Fin de bolsa: a los 10 s se agota la bolsa. Esperamos alarmaBaja y,
     #    sin intervencion, el autostop 60 s despues.

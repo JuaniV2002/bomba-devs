@@ -186,6 +186,8 @@ class Controlador(Atomico):
             s.modo, s.cmd, s.sigma = "bolsa", "baja", 0
         elif self.confirmacion in inputs and s.modo == "detenida":
             s.modo, s.objetivo, s.desvios, s.cmd, s.sigma = "idle", 0.0, 0, "confirmar", 0
+        elif self.confirmacion in inputs:
+            pass  # confirmacion irrelevante en otros modos: se ignora sin tocar sigma
         elif self.sensorFlujo in inputs and s.modo == "infund":
             v = inputs[self.sensorFlujo]
             s.medido = v
@@ -204,9 +206,9 @@ class Controlador(Atomico):
                 s.desvios, s.cmd, s.sigma = 0, "nada", INFINITY
         elif self.sensorFlujo in inputs and s.modo == "bolsa":
             s.medido = inputs[self.sensorFlujo]
-            s.sigma -= self.elapsed            # conserva la cuenta regresiva
+            s.sigma = max(0.0, s.sigma - self.elapsed)  # conserva cuenta regresiva, nunca negativo
         else:
-            s.sigma -= self.elapsed            # evento que no aplica, se ignora
+            s.sigma = max(0.0, s.sigma - self.elapsed)  # evento irrelevante: descuenta sin ir a negativo
         return s
 
     def intTransition(self):
@@ -291,9 +293,20 @@ class ModuloAlarmas(Atomico):
         elif self.alarmaCritica in inputs and s.modo == "ocioso":
             s.modo, s.pend, s.sigma = "critInic", "critica", 0
         elif self.confirmacion in inputs:
-            s.modo, s.pend, s.sigma = "ocioso", None, INFINITY
+            # Si hay una transicion interna inminente (sigma=0), la dejamos ejecutar
+            # primero (PyPDEVS da prioridad a intTransition): solo cancelamos si no
+            # hay salida pendiente inmediata, para evitar emitir la notificacion
+            # critica y luego silenciarla en el mismo instante de tiempo.
+            if s.sigma > 0:
+                s.modo, s.pend, s.sigma = "ocioso", None, INFINITY
+            else:
+                # sigma=0: la transicion interna ya esta programada para este instante;
+                # la dejamos correr. El modulo quedara en esperaConf/repitiendo, y la
+                # siguiente confirmacion que llegue (o la que reenvia el controlador)
+                # lo silenciara en el proximo paso.
+                s.sigma = 0
         else:
-            s.sigma -= self.elapsed
+            s.sigma = max(0.0, s.sigma - self.elapsed)
         return s
 
     def intTransition(self):
