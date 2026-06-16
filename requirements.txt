@@ -1,0 +1,2 @@
+# Simulador DEVS (fork de PythonPDEVS compatible con Python 3)
+git+https://github.com/likhithkanigolla/PyPDEVS-Updated.git#subdirectory=src
