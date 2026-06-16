@@ -1,0 +1,669 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[spanish,provide=*]{babel}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+
+\DeclareUnicodeCharacter{03B4}{\ensuremath{\delta}}
+\DeclareUnicodeCharacter{03C3}{\ensuremath{\sigma}}
+\DeclareUnicodeCharacter{03BB}{\ensuremath{\lambda}}
+\DeclareUnicodeCharacter{221E}{\ensuremath{\infty}}
+\DeclareUnicodeCharacter{222A}{\ensuremath{\cup}}
+\DeclareUnicodeCharacter{00D7}{\ensuremath{\times}}
+\DeclareUnicodeCharacter{2265}{\ensuremath{\ge}}
+\DeclareUnicodeCharacter{2264}{\ensuremath{\le}}
+\DeclareUnicodeCharacter{2260}{\ensuremath{\neq}}
+\DeclareUnicodeCharacter{00AC}{\ensuremath{\lnot}}
+\DeclareUnicodeCharacter{2227}{\ensuremath{\land}}
+\DeclareUnicodeCharacter{2228}{\ensuremath{\lor}}
+\DeclareUnicodeCharacter{2208}{\ensuremath{\in}}
+\DeclareUnicodeCharacter{2192}{\ensuremath{\rightarrow}}
+\DeclareUnicodeCharacter{2205}{\ensuremath{\emptyset}}
+\DeclareUnicodeCharacter{2248}{\ensuremath{\approx}}
+
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{tikz}
+\usetikzlibrary{positioning,arrows.meta,fit,backgrounds,calc}
+\usepackage{graphicx}
+\usepackage{float}
+\usepackage[hidelinks]{hyperref}
+
+\setlist{nosep,leftmargin=1.4em}
+\setlength{\emergencystretch}{3em}
+
+\lstdefinestyle{cml}{
+  basicstyle=\ttfamily\footnotesize,
+  breaklines=true,
+  breakautoindent=true,
+  columns=fullflexible,
+  keepspaces=true,
+  frame=single,
+  framesep=4pt,
+  xleftmargin=2pt,
+  rulecolor=\color{gray!45},
+  backgroundcolor=\color{gray!5},
+  extendedchars=true,
+  literate=
+    {δ}{{$\delta$}}1
+    {σ}{{$\sigma$}}1
+    {λ}{{$\lambda$}}1
+    {∞}{{$\infty$}}1
+    {∪}{{$\cup$}}1
+    {×}{{$\times$}}1
+    {≥}{{$\ge$}}1
+    {≤}{{$\le$}}1
+    {≠}{{$\neq$}}1
+    {¬}{{$\lnot$\,}}1
+    {∧}{{$\land$}}1
+    {∨}{{$\lor$}}1
+    {∈}{{$\in$}}1
+    {→}{{$\rightarrow$}}1
+    {∅}{{$\emptyset$}}1
+    {≈}{{$\approx$}}1
+    {á}{{\'a}}1 {é}{{\'e}}1 {í}{{\'i}}1 {ó}{{\'o}}1 {ú}{{\'u}}1
+    {Á}{{\'A}}1 {É}{{\'E}}1 {Í}{{\'I}}1 {Ó}{{\'O}}1 {Ú}{{\'U}}1
+    {ñ}{{\~n}}1 {Ñ}{{\~N}}1
+}
+
+\title{\textbf{Especificación DEVS}\\[2pt]
+\large Controlador simplificado de una bomba de infusión}
+\author{Juan Ignacio Villanueva \and Santiago Pesce}
+\date{Simulación de Sistemas --- Departamento de Computación, Facultad de Ciencias Exactas, UNRC\\[2pt]
+Junio de 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+Modelamos en DEVS un controlador simplificado de una bomba de infusión intravenosa. El controlador recibe órdenes médicas, vigila el caudal real informado por un sensor contra el caudal indicado, detecta desvíos sostenidos, gestiona la condición de fin de bolsa y genera las alarmas correspondientes. Presentamos la especificación formal de los cinco modelos atómicos y del modelo acoplado (estilo CML-DEVS), la implementación en Python con PyPDEVS y los resultados de tres escenarios de simulación que verifican el cumplimiento de los requisitos temporales.
+\end{abstract}
+
+\section{Descripción del sistema}
+
+El sistema administra medicación intravenosa a un caudal indicado por una orden médica. En esta versión reducida nos concentramos en el controlador: recibe las órdenes, compara el caudal real (que el sensor informa cada segundo) contra el indicado y reacciona ante tres situaciones, desvíos sostenidos de caudal, fin de bolsa y alarmas críticas sin confirmar. El interés no está tanto en el control fino del caudal como en verificar que cada acción ocurra dentro de los tiempos especificados.
+
+Modelamos el conjunto como un DEVS acoplado de cinco componentes atómicos: un generador de órdenes, el controlador de bomba, el actuador, el sensor de flujo y un módulo de alarmas. El generador y el sensor son sencillos; el controlador concentra prácticamente toda la lógica, y el módulo de alarmas se encarga de la repetición de las alarmas críticas.
+
+\section{Interfaz y requisitos temporales}
+
+El controlador recibe cuatro entradas: \texttt{ordenMedica} (caudal objetivo en ml/h, entre 0 y 200; un valor 0 detiene la infusión), \texttt{sensorFlujo} (caudal real medido), \texttt{finBolsa} (la bolsa está por agotarse) y \texttt{confirmacionEnfermero} (una alarma fue reconocida). Produce \texttt{ajustarCaudal}, \texttt{detenerBomba}, las alarmas \texttt{alarmaBaja}, \texttt{alarmaMedia} y \texttt{alarmaCritica}, y \texttt{registrarEvento} para la bitácora del sistema.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lr}
+\toprule
+Parámetro & Valor \\
+\midrule
+Rango de caudal permitido & 0 a 200 ml/h \\
+Tiempo máximo para iniciar la infusión & 3 s \\
+Período de muestreo del sensor & 1 s \\
+Latencia del actuador & 0,5 s \\
+Desvío máximo permitido de caudal & 10\% \\
+Tiempo máximo de desvío tolerado & 5 s \\
+Tiempo para confirmar una alarma crítica & 30 s \\
+Período de repetición de la alarma crítica & 10 s \\
+Tiempo máximo tras el fin de bolsa & 60 s \\
+\bottomrule
+\end{tabular}
+\caption{Parámetros temporales del sistema.}
+\end{table}
+
+Los requisitos temporales que el modelo debe respetar son:
+
+\begin{enumerate}
+\item Tras una \texttt{ordenMedica} con caudal mayor que cero, la bomba debe iniciar la infusión en menos de 3 s.
+\item La orden fija el caudal; la bomba lo mantiene hasta recibir una orden nueva. Caudal 0 detiene la infusión.
+\item El sensor informa el caudal real cada 1 s.
+\item Si el caudal real difiere más de 10\% del indicado durante más de 5 s, se emite \texttt{alarmaMedia}.
+\item Si el desvío no se corrige tras la \texttt{alarmaMedia}, se escala a \texttt{alarmaCritica} y se detiene la bomba. El criterio exacto lo define cada grupo.
+\item Si una \texttt{alarmaCritica} no se confirma en 30 s, debe repetirse cada 10 s.
+\item Ante \texttt{finBolsa} se emite \texttt{alarmaBaja} y la infusión continúa como máximo 60 s, tras los cuales la bomba se detiene sola.
+\item Después de una \texttt{alarmaCritica} la bomba queda detenida hasta recibir una \texttt{confirmacion\discretionary{}{}{}Enfermero} o una orden nueva.
+\end{enumerate}
+
+\section{Decisiones de modelado}\label{sec:decisiones}
+
+Antes de las especificaciones conviene dejar claras las decisiones que tomamos, porque condicionan la lectura de las funciones de transición.
+
+\paragraph{La salida sale siempre por $\lambda$.} En DEVS la salida se produce únicamente por la función $\lambda$, que se ejecuta antes de cada transición interna. Para emitir en respuesta a un evento de entrada usamos el patrón habitual: la transición externa no emite, sino que anota en una variable de estado qué corresponde emitir y agenda una transición interna inmediata ($\sigma = 0$); esa transición dispara $\lambda$ y luego $\delta_{int}$ deja el estado de reposo. En el controlador esa variable es \texttt{cmd}.
+
+\paragraph{Desvío por conteo de muestras.} Como el sensor entrega una medición por segundo, en vez de un temporizador continuo para el desvío contamos muestras consecutivas fuera de tolerancia: 6 muestras equivalen a 6 s, cubriendo el ``más de 5 s'' del requisito. La sexta muestra dispara \texttt{alarmaMedia} y la novena escala a \texttt{alarmaCritica} (tres muestras más tras la media). Una muestra dentro de tolerancia reinicia el contador, lo que cubre de forma natural el caso del desvío leve que el controlador corrige a tiempo.
+
+\paragraph{La repetición de la alarma crítica vive en el módulo de alarmas.} El requisito 6 (repetir cada 10 s una crítica sin confirmar) lo resuelve el módulo de alarmas, no el controlador. Así el controlador emite la crítica una sola vez y queda libre de ese temporizador, y la responsabilidad de insistir queda donde corresponde según el enunciado.
+
+\paragraph{Criterio de escalamiento (requisito 5).} Definimos que el desvío debe persistir 3 s más después de la \texttt{alarmaMedia} (tres muestras adicionales) para escalar a \texttt{alarmaCritica} y detener la bomba. Esto da \texttt{N\_CRITICA = N\_MEDIA + 3 = 9}.
+
+\paragraph{Durante el fin de bolsa no escalamos por desvío.} Una vez en modo \texttt{bolsa} ya se emitió la \texttt{alarmaBaja} y la bolsa se está agotando, así que dejamos que un único temporizador (la cuenta regresiva de 60 s) controle $\sigma$. Las muestras del sensor que llegan en ese intervalo solo actualizan el último valor medido y descuentan el tiempo transcurrido, sin disparar nuevas alarmas.
+
+\section{Modelos atómicos}
+
+Seguimos la notación de la tesis de Hollmann. Cada modelo declara únicamente las estructuras que usa, y $\sigma$ es la variable de estado cuyo valor devuelve la función de avance de tiempo $ta$.
+
+\subsection{Generador de órdenes médicas}
+
+Mantiene una agenda de órdenes, cada una con el caudal a indicar y el tiempo de espera hasta emitirla. No recibe eventos, así que omite $X$ y $\delta_{ext}$.
+
+\begin{lstlisting}[style=cml]
+atomic GenOrdenes is < Y, S, δint, λ, ta > where
+
+Y is
+  ordenMedica : R;              -- caudal objetivo (ml/h), 0 <= v <= 200
+end Y
+
+S is
+  agenda : List (R × Time);     -- (caudal, espera hasta emitir)
+  σ      : Time;
+end S
+
+δint((agenda, σ)) is
+  defcases
+    case s = (tail agenda, (head (tail agenda)).2);   if (#agenda > 1)
+    case s = ({}, ∞);                                 if (#agenda ≤ 1)
+  end defcases
+end δint
+
+λ((agenda, σ)) is
+  ordenMedica = (head agenda).1;
+end λ
+
+ta((agenda, σ)) is
+  σ;
+end ta
+
+end atomic
+\end{lstlisting}
+
+\noindent Estado inicial: \texttt{agenda} con el escenario a simular y \texttt{σ = (head agenda).2}. Para un escenario estocástico se llena la agenda con caudales y tiempos generados a partir de las distribuciones elegidas; la estructura del modelo no cambia.
+
+\subsection{Sensor de flujo}
+
+Mide el caudal real y lo informa cada segundo. Una medición nueva del actuador no reinicia el período de muestreo: solo actualiza el valor retenido.
+
+\begin{lstlisting}[style=cml]
+P is
+  T_muestreo = 1;               -- periodo de muestreo (s)
+end P
+
+atomic SensorFlujo is < X, Y, S, δint, δext, λ, ta > where
+
+X is
+  caudalActual : R;
+end X
+
+Y is
+  sensorFlujo : R;
+end Y
+
+S is
+  caudal : R;                   -- ultimo caudal real informado
+  σ      : Time;
+end S
+
+δint((caudal, σ)) is
+  σ = T_muestreo;               -- rearma el periodo completo
+end δint
+
+δext((caudal, σ), e, (caudalActual, value)) is
+  caudal = value;
+  σ = σ - e;                    -- no reinicia: solo descuenta lo transcurrido
+end δext
+
+λ((caudal, σ)) is
+  sensorFlujo = caudal;
+end λ
+
+ta((caudal, σ)) is
+  σ;
+end ta
+
+end atomic
+\end{lstlisting}
+
+\noindent Estado inicial: \texttt{(0, T\_muestreo)}.
+
+\subsection{Actuador de la bomba}
+
+Recibe órdenes del controlador y aplica el caudal con una latencia de 0,5 s. Al aplicarlo informa el nuevo caudal real.
+
+\begin{lstlisting}[style=cml]
+P is
+  T_latencia = 0.5;             -- latencia del actuador (s)
+end P
+
+atomic Actuador is < X, Y, S, δint, δext, λ, ta > where
+
+X is
+  ajustarCaudal : R;
+  detenerBomba  : {stop};
+end X
+
+Y is
+  caudalActual : R;
+end Y
+
+S is
+  objetivo : R;                 -- caudal a aplicar tras la latencia
+  σ        : Time;
+end S
+
+δext((objetivo, σ), e, (port, value)) is
+  defcases
+    case s = (value, T_latencia);   if (port = ajustarCaudal)
+    case s = (0,     T_latencia);   if (port = detenerBomba)
+  end defcases
+end δext
+
+δint((objetivo, σ)) is
+  σ = ∞;                        -- aplicado; pasivo hasta nueva orden
+end δint
+
+λ((objetivo, σ)) is
+  caudalActual = objetivo;
+end λ
+
+ta((objetivo, σ)) is
+  σ;
+end ta
+
+end atomic
+\end{lstlisting}
+
+\noindent Estado inicial: \texttt{(0, ∞)}.
+
+\subsection{Controlador de bomba}
+
+Es el núcleo del sistema. Funciona como una máquina de estados con cuatro modos: \texttt{idle} (sin infusión), \texttt{infund} (infundiendo y vigilando), \texttt{bolsa} (fin de bolsa, con cuenta regresiva de 60 s) y \texttt{detenida} (frenada tras una crítica, a la espera de confirmación u orden nueva). La variable \texttt{cmd} indica qué debe emitir la próxima transición interna, según el patrón descrito en la sección~\ref{sec:decisiones}. La función auxiliar \texttt{desviado} decide si una medición está fuera de tolerancia.
+
+\begin{lstlisting}[style=cml]
+P is
+  MAX_CAUDAL = 200;             -- ml/h
+  TOL        = 0.10;            -- 10%
+  N_MEDIA    = 6;               -- muestras consecutivas para alarmaMedia (> 5 s)
+  N_CRITICA  = 9;               -- N_MEDIA + 3 -> alarmaCritica (3 s despues)
+  T_BOLSA    = 60;              -- ventana maxima tras fin de bolsa (s)
+end P
+
+functions
+  function desviado is
+    real : R, obj : R → res : Boolean;
+    res = ( max(real - obj, obj - real) > TOL * obj );
+  end function
+end functions
+
+atomic Controlador is < X, Y, S, δint, δext, λ, ta > where
+
+X is
+  ordenMedica           : R;
+  sensorFlujo           : R;
+  finBolsa              : {signal};
+  confirmacionEnfermero : {signal};
+end X
+
+Y is
+  ajustarCaudal   : R;
+  detenerBomba    : {stop};
+  alarmaBaja      : {signal};
+  alarmaMedia     : {signal};
+  alarmaCritica   : {signal};
+  registrarEvento : Text;
+end Y
+
+S is
+  Cmd == {nada, iniciar, parar, corregir, media, critica, baja, autostop, confirmar};
+  modo     : {idle, infund, bolsa, detenida};
+  objetivo : R;                 -- caudal ordenado vigente
+  medido   : R;                 -- ultima medicion del sensor
+  desvios  : N;                 -- muestras consecutivas con desvio
+  cmd      : Cmd;               -- que emitir en la proxima transicion interna
+  σ        : Time;
+end S
+
+δext((modo, objetivo, medido, desvios, cmd, σ), e, (port, value)) is
+  defcases
+    -- Orden medica (valida en cualquier modo)
+    case s = (infund, value, medido, 0, iniciar, 0);
+         if ((port = ordenMedica) ∧ (value > 0))
+    case s = (idle, 0, medido, 0, parar, 0);
+         if ((port = ordenMedica) ∧ (value = 0))
+
+    -- Fin de bolsa (solo si esta infundiendo)
+    case s = (bolsa, objetivo, medido, desvios, baja, 0);
+         if ((port = finBolsa) ∧ (modo = infund))
+
+    -- Confirmacion del enfermero: libera el bloqueo posterior a una critica
+    case s = (idle, 0, medido, 0, confirmar, 0);
+         if ((port = confirmacionEnfermero) ∧ (modo = detenida))
+
+    -- Sensor de flujo durante infusion: deteccion y escalamiento por desvio
+    case s = (detenida, objetivo, value, desvios + 1, critica, 0);
+         if ((port = sensorFlujo) ∧ (modo = infund) ∧ desviado(value, objetivo) ∧ (desvios + 1 ≥ N_CRITICA))
+    case s = (infund, objetivo, value, desvios + 1, media, 0);
+         if ((port = sensorFlujo) ∧ (modo = infund) ∧ desviado(value, objetivo) ∧ (desvios + 1 = N_MEDIA))
+    case s = (infund, objetivo, value, desvios + 1, corregir, 0);
+         if ((port = sensorFlujo) ∧ (modo = infund) ∧ desviado(value, objetivo))
+    case s = (infund, objetivo, value, 0, nada, ∞);
+         if ((port = sensorFlujo) ∧ (modo = infund) ∧ ¬ desviado(value, objetivo))
+
+    -- Sensor durante fin de bolsa: solo registra, conserva la cuenta regresiva
+    case s = (bolsa, objetivo, value, desvios, cmd, σ - e);
+         if ((port = sensorFlujo) ∧ (modo = bolsa))
+
+    -- Evento que no aplica al modo actual: se ignora
+    default s = (modo, objetivo, medido, desvios, cmd, σ - e);
+  end defcases
+end δext
+
+δint((modo, objetivo, medido, desvios, cmd, σ)) is
+  defcases
+    case s = (infund,   objetivo, medido, desvios, nada,     ∞);        if (cmd = iniciar)
+    case s = (idle,     0,        medido, 0,       nada,     ∞);        if (cmd = parar)
+    case s = (infund,   objetivo, medido, desvios, nada,     ∞);        if (cmd = corregir)
+    case s = (infund,   objetivo, medido, desvios, nada,     ∞);        if (cmd = media)
+    case s = (detenida, objetivo, medido, 0,       nada,     ∞);        if (cmd = critica)
+    case s = (bolsa,    objetivo, medido, desvios, autostop, T_BOLSA);  if (cmd = baja)
+    case s = (idle,     0,        medido, 0,       nada,     ∞);        if (cmd = autostop)
+    case s = (idle,     0,        medido, 0,       nada,     ∞);        if (cmd = confirmar)
+    default s = (modo, objetivo, medido, desvios, nada, ∞);
+  end defcases
+end δint
+
+λ((modo, objetivo, medido, desvios, cmd, σ)) is
+  defcases
+    case ajustarCaudal = objetivo, registrarEvento = "inicio_infusion";              if (cmd = iniciar)
+    case detenerBomba  = stop,     registrarEvento = "stop_por_orden";               if (cmd = parar)
+    case ajustarCaudal = objetivo, registrarEvento = "correccion_caudal";            if (cmd = corregir)
+    case alarmaMedia   = signal,   registrarEvento = "desvio_sostenido";             if (cmd = media)
+    case alarmaCritica = signal, detenerBomba = stop, registrarEvento = "critica_stop";   if (cmd = critica)
+    case alarmaBaja    = signal,   registrarEvento = "fin_bolsa";                     if (cmd = baja)
+    case detenerBomba  = stop,     registrarEvento = "autostop_fin_bolsa";            if (cmd = autostop)
+    case registrarEvento = "confirmacion_enfermero";                                  if (cmd = confirmar)
+  end defcases
+end λ
+
+ta((modo, objetivo, medido, desvios, cmd, σ)) is
+  σ;
+end ta
+
+end atomic
+\end{lstlisting}
+
+\noindent Estado inicial: \texttt{(idle, 0, 0, 0, nada, ∞)}.
+
+La secuencia de fin de bolsa muestra cómo cooperan $\sigma$ y \texttt{cmd}: la transición externa fija \texttt{cmd = baja} y $\sigma = 0$; $\lambda$ emite la \texttt{alarmaBaja}; la transición interna del caso \texttt{baja} deja \texttt{cmd = autostop} y $\sigma = 60$. Durante esos 60 s las muestras del sensor solo descuentan $\sigma$, de modo que cuando llega a cero la transición interna dispara con \texttt{cmd = autostop} y detiene la bomba.
+
+\subsection{Módulo de alarmas}
+
+Gestiona las notificaciones. Las alarmas \texttt{baja} y \texttt{media} suenan una vez. La crítica insiste: si no se confirma en 30 s vuelve a sonar y luego se repite cada 10 s hasta la confirmación.
+
+\begin{lstlisting}[style=cml]
+P is
+  T_CONF = 30;                  -- espera inicial de confirmacion (s)
+  T_REP  = 10;                  -- periodo de repeticion (s)
+end P
+
+atomic ModuloAlarmas is < X, Y, S, δint, δext, λ, ta > where
+
+X is
+  alarmaBaja            : {signal};
+  alarmaMedia           : {signal};
+  alarmaCritica         : {signal};
+  confirmacionEnfermero : {signal};
+end X
+
+Y is
+  notificacionAlarma : Text;
+end Y
+
+S is
+  modo : {ocioso, critInic, esperaConf, repitiendo};
+  pend : Text ∪ {∅};            -- mensaje a emitir en la proxima interna
+  σ    : Time;
+end S
+
+δext((modo, pend, σ), e, (port, value)) is
+  defcases
+    case s = (ocioso,   "baja",    0);     if (port = alarmaBaja)
+    case s = (ocioso,   "media",   0);     if (port = alarmaMedia)
+    case s = (critInic, "critica", 0);     if (port = alarmaCritica)
+    case s = (ocioso,   ∅,         ∞);     if (port = confirmacionEnfermero)
+    default s = (modo, pend, σ - e);
+  end defcases
+end δext
+
+δint((modo, pend, σ)) is
+  defcases
+    case s = (ocioso,     ∅,         ∞);       if (modo = ocioso)
+    case s = (esperaConf, "critica", T_CONF);  if (modo = critInic)
+    case s = (repitiendo, "critica", T_REP);   if (modo = esperaConf)
+    case s = (repitiendo, "critica", T_REP);   if (modo = repitiendo)
+  end defcases
+end δint
+
+λ((modo, pend, σ)) is
+  notificacionAlarma = pend;
+end λ
+
+ta((modo, pend, σ)) is
+  σ;
+end ta
+
+end atomic
+\end{lstlisting}
+
+\noindent Estado inicial: \texttt{(ocioso, ∅, ∞)}.
+
+\section{Modelo acoplado}
+
+El acoplado $N$ conecta los cinco componentes. Las entradas \texttt{finBolsa} y \texttt{confirmacionEnfermero} no tienen una componente generadora en esta versión, así que entran como entradas externas del acoplado y las inyecta el escenario de simulación. Las salidas \texttt{sensorFlujo} y \texttt{caudalActual} se exponen únicamente para graficar.
+
+\begin{lstlisting}[style=cml]
+N = < X_N, Y_N, D, {M_d}, EIC, EOC, IC, Select >
+
+X_N = { finBolsa : {signal},  confirmacionEnfermero : {signal} }
+Y_N = { registrarEvento : Text,  notificacionAlarma : Text,
+        sensorFlujo : R,  caudalActual : R }
+
+D       = { G, Sen, Ctrl, Act, Alm }
+M_G = GenOrdenes   M_Sen = SensorFlujo   M_Ctrl = Controlador
+M_Act = Actuador   M_Alm = ModuloAlarmas
+
+EIC = {                                    -- entradas de N hacia componentes
+  [(N, finBolsa),              (Ctrl, finBolsa)],
+  [(N, confirmacionEnfermero), (Ctrl, confirmacionEnfermero)],
+  [(N, confirmacionEnfermero), (Alm,  confirmacionEnfermero)]
+}
+
+IC = {                                     -- conexiones internas
+  [(G,    ordenMedica),   (Ctrl, ordenMedica)],
+  [(Sen,  sensorFlujo),   (Ctrl, sensorFlujo)],
+  [(Ctrl, ajustarCaudal), (Act,  ajustarCaudal)],
+  [(Ctrl, detenerBomba),  (Act,  detenerBomba)],
+  [(Act,  caudalActual),  (Sen,  caudalActual)],
+  [(Ctrl, alarmaBaja),    (Alm,  alarmaBaja)],
+  [(Ctrl, alarmaMedia),   (Alm,  alarmaMedia)],
+  [(Ctrl, alarmaCritica), (Alm,  alarmaCritica)]
+}
+
+EOC = {                                    -- componentes hacia salidas de N
+  [(Ctrl, registrarEvento),    (N, registrarEvento)],
+  [(Alm,  notificacionAlarma), (N, notificacionAlarma)],
+  [(Sen,  sensorFlujo),        (N, sensorFlujo)],
+  [(Act,  caudalActual),       (N, caudalActual)]
+}
+
+Select = < Ctrl, Act, Sen, Alm, G >       -- prioridad ante empates
+\end{lstlisting}
+
+El corazón del modelo es el lazo de control \texttt{Ctrl} $\rightarrow$ \texttt{Act} $\rightarrow$ \texttt{Sen} $\rightarrow$ \texttt{Ctrl}: el controlador ordena el caudal, el actuador lo aplica con su latencia, el sensor lo mide y se lo devuelve al controlador. La función \texttt{Select} da prioridad al controlador cuando dos transiciones internas caen en el mismo instante, de modo que la decisión se toma antes de propagar sus efectos. La figura~\ref{fig:acoplado} muestra el modelo completo.
+
+\begin{figure}[h]
+\centering
+\resizebox{\textwidth}{!}{%
+\begin{tikzpicture}[
+  font=\small,
+  comp/.style={draw=teal!60, rounded corners, minimum width=2.5cm, minimum height=1.1cm, align=center, fill=teal!8},
+  hub/.style={draw=violet!60, rounded corners, minimum width=2.7cm, minimum height=1.3cm, align=center, fill=violet!12, line width=0.6pt},
+  ic/.style={-{Stealth[length=2mm]}, semithick},
+  ext/.style={-{Stealth[length=2mm]}, semithick, dashed},
+  lbl/.style={font=\scriptsize, fill=white, inner sep=1.5pt},
+  elbl/.style={font=\scriptsize, inner sep=1.5pt}
+]
+\node[comp] (gen)  at (0,3.1)    {Generador\\[-2pt]\scriptsize órdenes};
+\node[hub]  (ctrl) at (4.4,1.4)  {Controlador\\[-2pt]\scriptsize de bomba};
+\node[comp] (act)  at (9.0,3.1)  {Actuador\\[-2pt]\scriptsize bomba};
+\node[comp] (sen)  at (9.0,-0.3) {Sensor\\[-2pt]\scriptsize de flujo};
+\node[comp] (alm)  at (0,-0.3)   {Módulo\\[-2pt]\scriptsize de alarmas};
+
+\begin{scope}[on background layer]
+  \node[draw=gray!55, rounded corners, fit=(gen)(ctrl)(act)(sen)(alm), inner sep=11mm] (N) {};
+  \node[anchor=north west, gray!70, font=\footnotesize] at (N.north west) {\;$N$ --- Bomba de infusión (acoplado)};
+\end{scope}
+
+\draw[ic] (gen)  -- (ctrl) node[lbl,pos=0.5]{ordenMedica};
+\draw[ic] (ctrl) -- (act)  node[lbl,pos=0.5]{ajustar / detener};
+\draw[ic] (act)  -- (sen)  node[lbl,pos=0.5]{caudalActual};
+\draw[ic] (sen)  -- (ctrl) node[lbl,pos=0.5]{sensorFlujo};
+\draw[ic] (ctrl) -- (alm)  node[lbl,pos=0.5]{alarmas};
+
+\coordinate (fb) at ($(N.west)+(-1.6,1.0)$);
+\coordinate (cf) at ($(N.west)+(-1.6,-0.3)$);
+\node[elbl,left] at (fb) {finBolsa};
+\node[elbl,left] at (cf) {confirmación};
+\draw[ext] (fb) -- (ctrl.north west);
+\draw[ext] (cf) -- (ctrl.south west);
+\draw[ext] (cf) -- (alm.west);
+
+\draw[ext] (ctrl.south) -- ++(0,-2.9) node[below,elbl]{registrarEvento};
+\draw[ext] (alm.south)  -- ++(0,-2.4) node[below,elbl]{notificación};
+\end{tikzpicture}%
+}
+\caption{Modelo acoplado $N$. Líneas sólidas: acoplamientos internos (IC); punteadas: entradas y salidas externas (EIC/EOC).}
+\label{fig:acoplado}
+\end{figure}
+
+\section{Cumplimiento de los requisitos}
+
+\begin{table}[h]
+\centering
+\small
+\renewcommand{\arraystretch}{1.15}
+\begin{tabular}{>{\raggedright}p{1.2cm} p{12.5cm}}
+\toprule
+Req. & Dónde se cumple \\
+\midrule
+1 & \texttt{Ctrl} emite \texttt{ajustarCaudal} en $\sigma = 0$, más 0,5 s de latencia del actuador: muy por debajo de 3 s. \\
+2 & \texttt{objetivo} persiste hasta una orden nueva; el caso \texttt{ordenMedica = 0} lleva a \texttt{idle}. \\
+3 & \texttt{SensorFlujo} con \texttt{T\_muestreo = 1}. \\
+4 & Conteo de \texttt{N\_MEDIA = 6} muestras consecutivas fuera de tolerancia (cubre ``más de 5~s''). \\
+5 & Escalamiento a \texttt{N\_CRITICA = 9} muestras (tres más tras la media, 3~s adicionales). \\
+6 & \texttt{ModuloAlarmas}: espera 30 s y luego repite cada 10 s. \\
+7 & Modo \texttt{bolsa}: emite \texttt{alarmaBaja} y la cuenta de 60 s termina en \texttt{autostop}. \\
+8 & Modo \texttt{detenida}: solo sale por confirmación o por una orden nueva. \\
+9.1 & En \texttt{idle} y \texttt{detenida} no se emite \texttt{ajustarCaudal}; las órdenes están acotadas a 0--200 ml/h. \\
+\bottomrule
+\end{tabular}
+\caption{Trazabilidad entre requisitos y especificación.}
+\end{table}
+
+Los requisitos 1--8 se verifican en los escenarios de simulación de la sección~\ref{sec:resultados}.
+
+\section{Implementación}
+
+Los modelos se implementaron en Python~3 usando PyPDEVS (simulador clásico DEVS). Cada modelo atómico es una subclase de \texttt{AtomicDEVS} con los métodos \texttt{timeAdvance}, \texttt{outputFnc}, \texttt{intTransition} y \texttt{extTransition}. El estado es un objeto Python mutable; las transiciones lo modifican in place y lo retornan.
+
+\paragraph{Herramientas.} Python~3.14, PyPDEVS (Classic DEVS). Un módulo \texttt{compat.py} parchea la función \texttt{total\_ordering} de PyPDEVS para compatibilidad con Python~3.13+, ya que en versiones recientes los objetos no son comparables por defecto; se resuelve añadiendo \texttt{\_\_lt\_\_} a la clase base \texttt{Atomico}.
+
+\paragraph{Decisiones de implementación.}
+\begin{itemize}
+  \item El estado del controlador incluye \texttt{cmd} (qué emitir en la próxima \texttt{intTransition}) para reproducir exactamente el patrón $\lambda$-antes-de-$\delta_{int}$ de la especificación.
+  \item El actuador acepta un parámetro \texttt{falla} ($\in (0,1]$) que escala el caudal entregado, permitiendo inyectar desvíos de forma controlada en los escenarios.
+  \item \texttt{ModuloAlarmas.extTransition} para \texttt{confirmacionEnfermero} verifica si $\sigma = 0$ antes de cancelar: si hay una transición interna inminente, PyPDEVS le da prioridad; la confirmación que llega en ese instante se procesa en el paso siguiente. Esto evita silenciar una notificación ya programada.
+  \item Todos los descuentos de $\sigma$ en transiciones externas usan \texttt{max(0, σ - elapsed)} para evitar valores negativos por errores de punto flotante.
+\end{itemize}
+
+\paragraph{Escenarios.} Se definen en \texttt{escenarios.py}. Un modelo \texttt{Disparador} genera las señales externas (\texttt{finBolsa}, \texttt{confirmacionEnfermero}) en los instantes indicados. Un \texttt{Registro} captura con marca de tiempo todas las salidas del acoplado para imprimir la traza.
+
+\section{Verificación por simulación}\label{sec:resultados}
+
+Se corrieron tres escenarios. En ninguno se observa violación de las propiedades especificadas.
+
+\subsection*{Escenario 1 --- Operación normal}
+
+\textbf{Parámetros:} orden de 100~ml/h en $t=2$~s, sin falla (\texttt{falla=1.0}), simulación hasta $t=15$~s.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{esc1.pdf}
+\caption{Escenario 1: operación normal. El actuador entrega exactamente el caudal ordenado (sin falla). La línea escalón sube a 100~ml/h a los 0,5~s de recibida la orden (\textit{latencia del actuador}). No se producen alarmas ni violaciones de propiedades.}
+\label{fig:esc1}
+\end{figure}
+
+\begin{lstlisting}[style=cml]
+t=  2.00  evento  inicio_infusion
+t=  2.50  caudal  100.0
+\end{lstlisting}
+
+\textbf{Análisis:} La infusión arranca a los 0,5~s de recibida la orden (latencia del actuador). El caudal 100~ml/h se mantiene el resto de la simulación sin desvíos. \textbf{Req.~1:} inicio en $<3$~s (\checkmark). \textbf{Req.~2:} caudal sostenido hasta nueva orden (\checkmark). \textbf{Req.~3:} sensor activo cada 1~s (\checkmark). No se violan propiedades.
+
+\subsection*{Escenario 2 --- Desvío sostenido y alarma crítica}
+
+\textbf{Parámetros:} orden de 100~ml/h en $t=2$~s, actuador con falla \texttt{falla=0.5} (entrega 50~ml/h, desvío del 50\%), confirmación del enfermero en $t=55$~s, simulación hasta $t=70$~s.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{esc2.pdf}
+\caption{Escenario 2: desvío sostenido por falla del actuador (\texttt{falla=0.5}). La línea punteada muestra el objetivo de 100~ml/h; el caudal real se mantiene en 50~ml/h hasta que la bomba se detiene. Las líneas de evento indican la escalada de alarmas (media~$\to$~crítica) y las repeticiones a $t=41$ y $t=51$~s. La confirmación del enfermero a $t=55$~s libera el bloqueo. No se violan propiedades.}
+\label{fig:esc2}
+\end{figure}
+
+\begin{lstlisting}[style=cml]
+t=  2.00  evento  inicio_infusion
+t=  2.50  caudal  50.0
+t=  3.00  evento  correccion_caudal
+t=  4.00  evento  correccion_caudal
+t=  5.00  evento  correccion_caudal
+t=  6.00  evento  correccion_caudal
+t=  7.00  evento  correccion_caudal
+t=  8.00  evento  desvio_sostenido
+t=  8.00  alarma  media
+t= 11.00  evento  critica_stop
+t= 11.00  alarma  critica
+t= 11.50  caudal  0.0
+t= 41.00  alarma  critica
+t= 51.00  alarma  critica
+t= 55.00  evento  confirmacion_enfermero
+\end{lstlisting}
+
+\textbf{Análisis:} El actuador entrega la mitad del caudal ordenado; el desvío es del 50\%, muy por encima de la tolerancia del 10\%. Las muestras del sensor llegan a partir de $t=3$~s: muestras 1--5 disparan correcciones (el controlador reordena el caudal pero el actuador sigue fallando), la muestra 6 ($t=8$~s) alcanza \texttt{N\_MEDIA=6} y emite \texttt{alarmaMedia} (\textbf{Req.~4} \checkmark). Las muestras 7, 8 y 9 ($t=9$, $10$, $11$~s) alcanzan \texttt{N\_CRITICA=9}: se emite \texttt{alarmaCritica} y la bomba se detiene (\textbf{Req.~5} y \textbf{Req.~8} \checkmark). El caudal cae a cero a $t=11{,}5$~s (latencia del actuador). Sin confirmación, la alarma crítica se repite a $t=41$~s ($11+30$) y a $t=51$~s ($41+10$) (\textbf{Req.~6} \checkmark). La confirmación a $t=55$~s libera el bloqueo (\textbf{Req.~8} \checkmark). No se emiten más alarmas tras la confirmación: la propiedad de silencio post-confirmación se cumple hasta $t=70$~s. No se violan propiedades.
+
+\subsection*{Escenario 3 --- Fin de bolsa}
+
+\textbf{Parámetros:} orden de 100~ml/h en $t=2$~s, sin falla (\texttt{falla=1.0}), señal \texttt{finBolsa} en $t=10$~s, simulación hasta $t=75$~s.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{esc3.pdf}
+\caption{Escenario 3: fin de bolsa sin intervención del enfermero. El caudal se mantiene en 100~ml/h durante la ventana de 60~s posterior al \texttt{finBolsa}. El autostop ocurre exactamente a $t=70$~s ($10+60$), y el actuador lo aplica a $t=70{,}5$~s. No se violan propiedades.}
+\label{fig:esc3}
+\end{figure}
+
+\begin{lstlisting}[style=cml]
+t=  2.00  evento  inicio_infusion
+t=  2.50  caudal  100.0
+t= 10.00  evento  fin_bolsa
+t= 10.00  alarma  baja
+t= 70.00  evento  autostop_fin_bolsa
+t= 70.50  caudal  0.0
+\end{lstlisting}
+
+\textbf{Análisis:} Al llegar \texttt{finBolsa} en $t=10$~s se emite inmediatamente \texttt{alarmaBaja} y el controlador pasa al modo \texttt{bolsa} con cuenta regresiva de 60~s (\textbf{Req.~7} \checkmark). Sin intervención externa, el autostop ocurre en $t=10+60=70$~s y la bomba se detiene a $t=70{,}5$~s (\textbf{Req.~7} \checkmark). Las muestras del sensor durante la ventana de bolsa solo actualizan el valor medido sin generar nuevas alarmas. No se violan propiedades.
+
+\end{document}
