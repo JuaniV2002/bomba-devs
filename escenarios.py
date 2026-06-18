@@ -8,12 +8,29 @@ captura las salidas con su tiempo para imprimir una traza legible.
 Juan Ignacio Villanueva - Santiago Pesce
 """
 
+import os
+
 from pypdevs.DEVS import AtomicDEVS, CoupledDEVS
 from pypdevs.infinity import INFINITY
 from pypdevs.simulator import Simulator
 
 import compat  # parche de pypdevs para Python 3.13+ (ver compat.py)
 from modelos import BombaInfusion, Atomico, SENIAL
+from graficos import generar_graficos, imprimir_metricas
+
+
+def _slug(texto):
+    """Nombre de carpeta seguro a partir del titulo del escenario."""
+    s = texto.lower().strip()
+    s = s.replace("ó", "o").replace("í", "i").replace("á", "a") \
+         .replace("é", "e").replace("ú", "u")
+    out = []
+    for ch in s:
+        out.append(ch if ch.isalnum() else "_")
+    slug = "".join(out)
+    while "__" in slug:
+        slug = slug.replace("__", "_")
+    return slug.strip("_")
 
 
 # Disparador de seniales externas (fin de bolsa, confirmacion).
@@ -77,9 +94,18 @@ class Registro(Atomico):
 
 
 class Escenario(CoupledDEVS):
-    def __init__(self, agenda, fin_bolsa=None, confirmaciones=None, falla=1.0):
+    # fin_bolsa / confirmaciones: tiempos fijos opcionales, inyectados via
+    # los puertos externos de N (Disparador), ademas de lo que generen los
+    # GenAlarmaFinBolsa / GenConfirmacionEnfermero internos de N.
+    # media_fin_bolsa / media_confirmacion / seed_*: ver BombaInfusion.
+    def __init__(self, agenda, fin_bolsa=None, confirmaciones=None, falla=1.0,
+                 media_fin_bolsa=60.0, media_confirmacion=40.0,
+                 seed_fin_bolsa=None, seed_confirmacion=None):
         CoupledDEVS.__init__(self, "Escenario")
-        self.n = self.addSubModel(BombaInfusion(agenda, falla))
+        self.n = self.addSubModel(BombaInfusion(
+            agenda, falla,
+            media_fin_bolsa=media_fin_bolsa, media_confirmacion=media_confirmacion,
+            seed_fin_bolsa=seed_fin_bolsa, seed_confirmacion=seed_confirmacion))
         self.reg = self.addSubModel(Registro())
         self.disp_fb = self.addSubModel(Disparador("FinBolsa", fin_bolsa or []))
         self.disp_cf = self.addSubModel(Disparador("Confirmacion", confirmaciones or []))
@@ -92,76 +118,15 @@ class Escenario(CoupledDEVS):
         self.connectPorts(self.n.caudalActual, self.reg.caudal)
 
 
-def graficar(titulo, eventos, hasta, objetivo=None, archivo=None):
-    import matplotlib
-    matplotlib.use('Agg')
-    import matplotlib.pyplot as plt
-
-    # Reconstruir la señal de caudal como función escalón
-    tc, vc = [0.0], [0.0]
-    for t, tp, v in eventos:
-        if tp == "caudal":
-            tc.append(t)
-            vc.append(v)
-    tc.append(hasta)
-    vc.append(vc[-1])
-
-    fig, ax = plt.subplots(figsize=(10, 3.8))
-    ax.step(tc, vc, where='post', color='steelblue', lw=2, label='caudal real (ml/h)')
-    ax.fill_between(tc, vc, step='post', alpha=0.12, color='steelblue')
-    if objetivo is not None:
-        ax.axhline(objetivo, color='dimgray', ls='--', lw=1, alpha=0.55,
-                   label=f'objetivo: {objetivo} ml/h')
-
-    ymax = max(vc) if max(vc) > 0 else 100
-    ax.set_ylim(-8, ymax * 1.65)
-
-    t_eventos_set = {t for t, tp, _ in eventos if tp == "evento"}
-
-    EVENTO_ESTILO = {
-        'inicio_infusion':        ('seagreen',     '-',  'inicio'),
-        'desvio_sostenido':       ('darkorange',   '--', 'alarmaMedia'),
-        'critica_stop':           ('crimson',      '-',  'alarmaCritica + stop'),
-        'fin_bolsa':              ('mediumpurple', '--', 'finBolsa / alarmaBaja'),
-        'autostop_fin_bolsa':     ('crimson',      '-',  'autostop'),
-        'confirmacion_enfermero': ('seagreen',     '-',  'confirmación'),
-    }
-
-    def poner(t, color, ls, lw, etiqueta, alpha=0.9):
-        ax.axvline(t, color=color, ls=ls, lw=lw, alpha=alpha, zorder=3)
-        ax.text(t + hasta * 0.006, ymax * 1.58, etiqueta,
-                color=color, fontsize=7, rotation=90, va='top', ha='left',
-                bbox=dict(boxstyle='round,pad=0.15', fc='white', ec='none', alpha=0.8))
-
-    for t, tp, val in eventos:
-        if tp == "evento" and val in EVENTO_ESTILO:
-            color, ls, etiqueta = EVENTO_ESTILO[val]
-            poner(t, color, ls, 1.5, etiqueta)
-        elif tp == "alarma":
-            if val == "critica" and t not in t_eventos_set:
-                poner(t, 'crimson', '--', 1.0, 'rep. alarmaCritica', alpha=0.65)
-            elif val == "baja" and t not in t_eventos_set:
-                poner(t, 'mediumpurple', '--', 1.0, 'alarmaBaja', alpha=0.65)
-
-    ax.set_xlabel('Tiempo (s)', fontsize=9)
-    ax.set_ylabel('Caudal (ml/h)', fontsize=9)
-    ax.set_title(titulo, fontsize=10, fontweight='bold')
-    ax.set_xlim(-0.5, hasta)
-    ax.legend(loc='upper right', fontsize=8, framealpha=0.9)
-    ax.grid(True, alpha=0.2)
-    ax.tick_params(labelsize=8)
-    fig.tight_layout()
-    if archivo:
-        fig.savefig(archivo, dpi=150, bbox_inches='tight')
-    plt.close(fig)
-
-
 def correr(titulo, agenda, fin_bolsa=None, confirmaciones=None, falla=1.0, hasta=80.0,
-           archivo=None, objetivo=None):
+           media_fin_bolsa=INFINITY, media_confirmacion=INFINITY,
+           seed_fin_bolsa=None, seed_confirmacion=None, graficar=True):
     print("=" * 64)
     print(titulo)
     print("=" * 64)
-    modelo = Escenario(agenda, fin_bolsa, confirmaciones, falla)
+    modelo = Escenario(agenda, fin_bolsa, confirmaciones, falla,
+                        media_fin_bolsa=media_fin_bolsa, media_confirmacion=media_confirmacion,
+                        seed_fin_bolsa=seed_fin_bolsa, seed_confirmacion=seed_confirmacion)
     sim = Simulator(modelo)
     sim.setClassicDEVS()
     sim.setTerminationTime(hasta)
@@ -170,16 +135,21 @@ def correr(titulo, agenda, fin_bolsa=None, confirmaciones=None, falla=1.0, hasta
     for t, tipo, val in modelo.reg.state.eventos:
         print("  t=%6.2f  %-7s %s" % (t, tipo, val))
     print()
-    if archivo:
-        graficar(titulo, modelo.reg.state.eventos, hasta, objetivo=objetivo, archivo=archivo)
-        print(f"  → figura guardada en {archivo}\n")
+
+    if graficar:
+        carpeta = os.path.join("graficos", _slug(titulo))
+        rutas, metricas = generar_graficos(modelo.n.mon.state, hasta, titulo, carpeta)
+        imprimir_metricas(metricas, titulo)
+        print(f"  Graficos guardados en: {carpeta}/")
+        print()
+
+    return modelo
 
 
 if __name__ == "__main__":
     # 1) Operacion normal: una orden de 100 ml/h a los 2 s, sin fallas.
     correr("Escenario 1 - Operacion normal",
-           agenda=[(100, 2)], hasta=15,
-           archivo="esc1.pdf")
+           agenda=[(100, 2)], hasta=15)
 
     # 2) Desvio sostenido: el actuador entrega la mitad del caudal ordenado.
     #    Esperamos alarmaMedia, escalamiento a critica y bomba detenida. La
@@ -188,11 +158,21 @@ if __name__ == "__main__":
     #    Se usa hasta=70 para dejar margen tras la confirmacion (a los 55 s)
     #    y verificar que no se emiten mas repeticiones despues de ella.
     correr("Escenario 2 - Desvio sostenido y alarma critica",
-           agenda=[(100, 2)], confirmaciones=[55], falla=0.5, hasta=70,
-           archivo="esc2.pdf", objetivo=100)
+           agenda=[(100, 2)], confirmaciones=[55], falla=0.5, hasta=70)
 
     # 3) Fin de bolsa: a los 10 s se agota la bolsa. Esperamos alarmaBaja y,
     #    sin intervencion, el autostop 60 s despues.
     correr("Escenario 3 - Fin de bolsa",
-           agenda=[(100, 2)], fin_bolsa=[10], hasta=75,
-           archivo="esc3.pdf")
+           agenda=[(100, 2)], fin_bolsa=[10], hasta=75)
+
+    # 4) Generadores aleatorios: en vez de fijar fin_bolsa/confirmaciones a
+    #    mano, dejamos que GenAlarmaFinBolsa y GenConfirmacionEnfermero (con
+    #    distribucion exponencial) generen las senales. Con falla=0.5 el
+    #    sistema deberia escalar a alarma critica como en el escenario 2,
+    #    pero ahora la confirmacion del enfermero llega en un instante
+    #    aleatorio en vez de uno fijo. Seeds fijas para que la corrida sea
+    #    reproducible.
+    correr("Escenario 4 - Generadores aleatorios (fin de bolsa y confirmacion)",
+           agenda=[(100, 2)], falla=0.5, hasta=90,
+           media_fin_bolsa=45.0, media_confirmacion=35.0,
+           seed_fin_bolsa=42, seed_confirmacion=7)
