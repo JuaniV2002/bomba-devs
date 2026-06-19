@@ -66,7 +66,7 @@ def graficar_caudal(monitor, t_final, titulo, carpeta):
 
 
 def graficar_estado(monitor, t_final, titulo, carpeta):
-    fig, ax = plt.subplots(figsize=(9, 3))
+    fig, ax = plt.subplots(figsize=(9, 3.3))
     xs, ys = _step_series(monitor.serie_modo, t_final)
     y_num = [MODOS_ORDEN.index(m) for m in ys]
     ax.step(xs, y_num, where="post", color="#2c3e50", linewidth=2)
@@ -76,6 +76,15 @@ def graficar_estado(monitor, t_final, titulo, carpeta):
     ax.set_ylabel("Estado de la bomba")
     ax.set_title(f"{titulo}\nEstado de la bomba a lo largo del tiempo")
     ax.grid(alpha=0.3)
+    # Resultados 6 y 7 de la seccion 11 (escalares): se anotan aqui ademas
+    # de imprimirse en consola, para que queden junto al grafico de estado
+    # del que derivan.
+    pct = monitor.tiempo_infusion_correcta_pct(t_final)
+    texto = (f"Detenciones preventivas: {monitor.detenciones_preventivas}\n"
+             f"Tiempo con infusion correcta: {pct:.1f}%")
+    ax.text(0.99, 0.02, texto, transform=ax.transAxes, ha="right", va="bottom",
+            fontsize=9, bbox=dict(boxstyle="round", facecolor="white", alpha=0.85,
+                                    edgecolor="#999999"))
     fig.tight_layout()
     path = os.path.join(carpeta, "02_estado_bomba.png")
     fig.savefig(path, dpi=130)

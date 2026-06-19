@@ -480,18 +480,23 @@ class EstadoMonitor:
         self.serie_modo.append((t_final, self.modo_actual))  # cierra el ultimo escalon
 
     def tiempo_infusion_correcta_pct(self, t_final):
-        """% del tiempo total en que el sistema estuvo en modo 'infund' y
-        dentro de tolerancia (osea, sin un tramo de desvio activo)."""
-        if t_final <= 0:
-            return 0.0
+        """% del tiempo EN QUE LA BOMBA ESTUVO INFUNDIENDO que transcurrio
+        dentro de tolerancia (sin un tramo de desvio activo). Se divide
+        por t_infund, no por el tiempo total simulado: los tramos en
+        idle/bolsa/detenida no son "infusion incorrecta", son tiempo sin
+        infusion en absoluto, y no deberian penalizar esta metrica (un
+        escenario sin fallas debe dar 100%, sin importar cuanto tiempo
+        paso en idle antes de la primera orden medica)."""
         t_infund = 0.0
         modos = self.serie_modo  # ya debe estar cerrada (ver cerrar())
         for (t0, modo), (t1, _) in zip(modos, modos[1:]):
             if modo == "infund":
                 t_infund += (t1 - t0)
+        if t_infund <= 0:
+            return 0.0  # nunca llego a infundir: no hay base sobre la que medir
         t_desviado = sum(fin - ini for ini, fin in self.tramos_desvio)
         t_correcta = max(0.0, t_infund - t_desviado)
-        return 100.0 * t_correcta / t_final
+        return 100.0 * t_correcta / t_infund
 
 
 class Monitor(Atomico):
@@ -554,9 +559,14 @@ class Monitor(Atomico):
                 s.t_fin_bolsa = t
             if ev in EVENTOS_DETENCION_PREVENTIVA:
                 s.detenciones_preventivas += 1
-                if ev == "autostop_fin_bolsa" and s.t_fin_bolsa is not None:
-                    s.tiempos_resp_finbolsa.append(t - s.t_fin_bolsa)
-                    s.t_fin_bolsa = None
+            # tiempo de respuesta ante fin de bolsa: lapso entre el evento
+            # finBolsa y su resolucion, sea por autostop (deteccion
+            # preventiva) o por reanudacion tras confirmacion del
+            # enfermero. Ambos casos cuentan como "respuesta del sistema
+            # ante el fin de bolsa", no solo el autostop.
+            if ev in ("autostop_fin_bolsa", "reanudacion_post_bolsa") and s.t_fin_bolsa is not None:
+                s.tiempos_resp_finbolsa.append(t - s.t_fin_bolsa)
+                s.t_fin_bolsa = None
 
             nuevo_modo = EVENTO_A_MODO.get(ev)
             if nuevo_modo is not None and nuevo_modo != s.modo_actual:
