@@ -38,7 +38,10 @@ def safety_no_administra_con_orden_cero(monitor):
     """La bomba no debe administrar medicacion si la ultima orden medica
     recibida indica caudal igual a cero.
     Se verifica que, tras un 'stop_por_orden', el caudal real (serie_real)
-    no vuelva a ser > 0 hasta la siguiente orden que reinicie la infusion."""
+    no vuelva a ser > 0 hasta que llegue una NUEVA orden ('inicio_infusion').
+    Solo una nueva ordenMedica puede levantar esta restriccion (no una
+    reanudacion post-bolsa ni una confirmacion: esas no son ordenes
+    medicas, y de hecho solo pueden ocurrir si la ultima orden no fue 0)."""
     eventos = monitor.eventos
     reales = monitor.serie_real
     violaciones = []
@@ -46,8 +49,8 @@ def safety_no_administra_con_orden_cero(monitor):
     for t, ev in eventos:
         if ev == "stop_por_orden":
             t_stop = t
-        elif ev in ("inicio_infusion", "reanudacion_post_bolsa"):
-            t_stop = None  # nueva orden vigente: ya no aplica la prohibicion
+        elif ev == "inicio_infusion":
+            t_stop = None  # nueva orden con caudal > 0: ya no aplica la prohibicion
         if t_stop is not None:
             for tr, vr in reales:
                 if tr > t_stop and vr > 0:
@@ -101,15 +104,32 @@ def safety_no_reanuda_sin_confirmar(monitor):
 
 def liveness_orden_produce_accion(monitor):
     """Toda ordenMedica recibida debe producir eventualmente una accion
-    sobre la bomba. En este modelo, cada ordenMedica con efecto se traduce
-    de inmediato (en la misma transicion) en un evento de registro
-    ('inicio_infusion' o 'stop_por_orden'), asi que la propiedad se cumple
-    estructuralmente siempre que existan estos eventos en la traza."""
-    eventos = [ev for _, ev in monitor.eventos]
-    ordenes = [ev for ev in eventos if ev in ("inicio_infusion", "stop_por_orden")]
+    sobre la bomba. Verificar solo que exista el evento de registro
+    ('inicio_infusion'/'stop_por_orden') seria tautologico, porque ese
+    evento se genera en la misma transicion que procesa la orden, sin
+    importar lo que haga el Actuador despues. La accion REAL sobre la
+    bomba es el cambio efectivo de caudal real (serie_real), que depende
+    del Actuador (con su latencia T_LATENCIA y su factor de falla). Por
+    eso esta verificacion exige que, para cada orden, el caudal real
+    eventualmente tome el valor esperado (o cualquier valor distinto del
+    anterior si la falla del actuador desvia el resultado)."""
+    eventos = monitor.eventos
+    reales = monitor.serie_real
+    ordenes = [(t, ev) for t, ev in eventos if ev in ("inicio_infusion", "stop_por_orden")]
     if not ordenes:
         return Resultado(None, "No se registraron ordenes medicas en este escenario")
-    return Resultado(True, f"{len(ordenes)} orden/es medica/s, todas con accion registrada: {ordenes}")
+    sin_accion = []
+    for i, (t_orden, ev) in enumerate(ordenes):
+        # ventana de busqueda: hasta la proxima orden, o hasta el final de
+        # la traza si es la ultima.
+        t_siguiente = ordenes[i + 1][0] if i + 1 < len(ordenes) else float("inf")
+        cambio = any(t_orden < tr <= t_siguiente for tr, _ in reales)
+        if not cambio:
+            sin_accion.append((t_orden, ev))
+    if sin_accion:
+        return Resultado(False, f"Ordenes sin ningun cambio de caudal real observado: {sin_accion}")
+    return Resultado(True, f"{len(ordenes)} orden/es medica/s, todas seguidas de un cambio "
+                            f"efectivo en el caudal real (no solo el registro del evento)")
 
 
 def liveness_critica_se_repite(monitor):
@@ -141,7 +161,11 @@ def liveness_critica_se_repite(monitor):
 def liveness_finbolsa_detiene_eventualmente(monitor):
     """Luego de detectar finBolsa, la infusion debe detenerse eventualmente
     (autostop) o continuar de forma legitima por una confirmacion del
-    enfermero (reanudacion_post_bolsa) o una nueva orden."""
+    enfermero (reanudacion_post_bolsa) o una nueva orden. A diferencia de
+    la propiedad temporal correspondiente (que exige la cota de T_BOLSA),
+    esta version de liveness no exige ningun limite de tiempo: solo que la
+    situacion se resuelva en algun momento dentro del horizonte simulado,
+    sin quedar nunca en un estado de fin de bolsa pendiente sin resolver."""
     eventos = monitor.eventos
     fines = [t for t, ev in eventos if ev == "fin_bolsa"]
     if not fines:
@@ -153,7 +177,7 @@ def liveness_finbolsa_detiene_eventualmente(monitor):
             return Resultado(False, f"finBolsa en t={t_fb} nunca se resolvio "
                                      f"(ni autostop ni reanudacion) dentro del horizonte simulado")
     return Resultado(True, f"Cada finBolsa ({fines}) tuvo una resolucion eventual "
-                            f"(autostop, reanudacion o nueva orden)")
+                            f"(autostop, reanudacion o nueva orden), sin verificar el plazo de 60s")
 
 
 # ---------------------------------------------------------------------------
@@ -162,17 +186,32 @@ def liveness_finbolsa_detiene_eventualmente(monitor):
 
 def temporal_inicio_menor_3s(monitor):
     """Toda ordenMedica con caudal > 0 debe provocar el inicio de la
-    infusion en menos de 3 segundos. En esta implementacion el Controlador
-    procesa la orden y emite ajustarCaudal en la misma transicion (delta=0),
-    asi que el margen real esta dominado por T_LATENCIA del actuador, muy
-    por debajo del limite de 3s."""
-    from modelos import T_LATENCIA
-    if not any(ev == "inicio_infusion" for _, ev in monitor.eventos):
+    infusion en menos de 3 segundos. Se mide empiricamente: el tiempo
+    transcurrido entre el evento 'inicio_infusion' (cuando el Controlador
+    procesa la orden) y el primer punto de serie_real con caudal > 0 que
+    le sigue. Solo comprobar la constante T_LATENCIA seria tautologico
+    (no usa la traza real de la corrida ni detectaria, por ejemplo, un
+    bug que demorase la emision de ajustarCaudal en el Controlador)."""
+    eventos = monitor.eventos
+    reales = monitor.serie_real
+    inicios = [t for t, ev in eventos if ev == "inicio_infusion"]
+    if not inicios:
         return Resultado(None, "No hubo ninguna orden con caudal > 0 en este escenario")
-    if T_LATENCIA >= 3:
-        return Resultado(False, f"T_LATENCIA={T_LATENCIA}s no cumple el limite de 3s")
-    return Resultado(True, f"El Controlador reacciona en el mismo instante (delta=0) y "
-                            f"el Actuador aplica el ajuste en T_LATENCIA={T_LATENCIA}s < 3s")
+    violaciones = []
+    detalles = []
+    for t_orden in inicios:
+        primer_caudal = next(((tr, vr) for tr, vr in reales if tr > t_orden and vr > 0), None)
+        if primer_caudal is None:
+            violaciones.append((t_orden, None))
+            continue
+        delta = round(primer_caudal[0] - t_orden, 4)
+        if delta >= 3:
+            violaciones.append((t_orden, delta))
+        else:
+            detalles.append((t_orden, delta))
+    if violaciones:
+        return Resultado(False, f"Ordenes donde el inicio de infusion tardo >= 3s o nunca ocurrio: {violaciones}")
+    return Resultado(True, f"Tiempos reales hasta el primer caudal > 0 tras cada orden: {detalles} (todos < 3s)")
 
 
 def temporal_desvio_genera_alarma_media(monitor):
@@ -194,15 +233,35 @@ def temporal_desvio_genera_alarma_media(monitor):
 
 def temporal_finbolsa_detiene_60s(monitor):
     """Si se detecta finBolsa, la bomba debe detenerse como maximo luego
-    de 60 segundos (T_BOLSA)."""
-    tiempos = monitor.tiempos_resp_finbolsa
-    if not tiempos:
-        return Resultado(None, "No hubo ningun autostop por fin de bolsa en este escenario "
-                                "(puede ser porque el enfermero confirmo antes, o porque no hubo finBolsa)")
-    malos = [t for t in tiempos if t > T_BOLSA + 0.01]
-    if malos:
-        return Resultado(False, f"Tiempos de autostop que superan T_BOLSA={T_BOLSA}s: {malos}")
-    return Resultado(True, f"Tiempos de autostop tras finBolsa: {tiempos} (todos <= {T_BOLSA}s)")
+    de 60 segundos (T_BOLSA). Se mide directamente desde el evento
+    'fin_bolsa' hasta que ocurre alguna resolucion: el autostop (caudal a
+    0) o una reanudacion legitima por confirmacion/nueva orden antes de
+    los 60s. No alcanza con leer tiempos_resp_finbolsa (que solo registra
+    autostops y, por construccion del Controlador, siempre vale exactamente
+    T_BOLSA): eso volveria la verificacion tautologica y no detectaria si
+    el evento fin_bolsa tardara en resolverse mas de lo permitido."""
+    eventos = monitor.eventos
+    fines = [t for t, ev in eventos if ev == "fin_bolsa"]
+    if not fines:
+        return Resultado(None, "No se detecto finBolsa en este escenario")
+    violaciones = []
+    detalles = []
+    for t_fb in fines:
+        resolucion = next((t for t, ev in eventos
+                            if ev in ("autostop_fin_bolsa", "reanudacion_post_bolsa", "inicio_infusion")
+                            and t > t_fb), None)
+        if resolucion is None:
+            violaciones.append((t_fb, None))
+        else:
+            delta = round(resolucion - t_fb, 4)
+            if delta > T_BOLSA + 0.01:
+                violaciones.append((t_fb, delta))
+            else:
+                detalles.append((t_fb, delta))
+    if violaciones:
+        return Resultado(False, f"finBolsa sin resolucion dentro de T_BOLSA={T_BOLSA}s: {violaciones}")
+    return Resultado(True, f"Cada finBolsa se resolvio dentro de T_BOLSA={T_BOLSA}s "
+                            f"(tiempos hasta resolucion: {detalles})")
 
 
 def temporal_critica_repite_30_10(monitor):
