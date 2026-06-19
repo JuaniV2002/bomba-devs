@@ -48,10 +48,11 @@ def graficar_caudal(monitor, t_final, titulo, carpeta):
         xs, ys = _step_series(monitor.serie_indicado, t_final)
         ax.step(xs, ys, where="post", label="Caudal indicado", color="#1f77b4", linewidth=2)
     if monitor.serie_real:
-        xs_r = [t for t, _ in monitor.serie_real]
-        ys_r = [v for _, v in monitor.serie_real]
-        ax.plot(xs_r, ys_r, label="Caudal real", color="#d62728", linewidth=1.2,
-                 marker=".", markersize=3, alpha=0.85)
+        # caudalActual se mantiene constante entre cambios (lo fija el
+        # Actuador con su latencia), asi que es un escalon, no una rampa.
+        xs_r, ys_r = _step_series(monitor.serie_real, t_final)
+        ax.step(xs_r, ys_r, where="post", label="Caudal real", color="#d62728",
+                linewidth=1.4, marker=".", markersize=4, alpha=0.9)
     ax.set_xlabel("Tiempo (s)")
     ax.set_ylabel("Caudal (ml/h)")
     ax.set_title(f"{titulo}\nCaudal indicado vs caudal real")

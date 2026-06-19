@@ -257,6 +257,14 @@ class Controlador(Atomico):
             s.modo, s.cmd, s.sigma = "bolsa", "baja", 0
         elif self.confirmacion in inputs and s.modo == "detenida":
             s.modo, s.objetivo, s.desvios, s.cmd, s.sigma = "idle", 0.0, 0, "confirmar", 0
+        elif self.confirmacion in inputs and s.modo == "bolsa":
+            # El enfermero confirma durante la ventana de fin de bolsa (por
+            # ej. cambio la bolsa): se cancela el temporizador de T_BOLSA y
+            # la infusion continua con el mismo objetivo, como si la alarma
+            # de fin de bolsa nunca hubiera ocurrido. Reinicia el contador
+            # de desvios por prudencia (la bolsa es otra, el caudal real
+            # podria no estar establecido aun).
+            s.modo, s.desvios, s.cmd, s.sigma = "infund", 0, "reanudar", 0
         elif self.confirmacion in inputs:
             pass  # confirmacion irrelevante en otros modos: se ignora sin tocar sigma
         elif self.sensorFlujo in inputs and s.modo == "infund":
@@ -301,6 +309,8 @@ class Controlador(Atomico):
             s.modo, s.objetivo, s.desvios, s.cmd, s.sigma = "idle", 0.0, 0, "nada", INFINITY
         elif c == "confirmar":
             s.modo, s.objetivo, s.desvios, s.cmd, s.sigma = "idle", 0.0, 0, "nada", INFINITY
+        elif c == "reanudar":
+            s.modo, s.cmd, s.sigma = "infund", "nada", INFINITY
         else:
             s.cmd, s.sigma = "nada", INFINITY
         return s
@@ -324,6 +334,8 @@ class Controlador(Atomico):
             return {self.detener: SENIAL, self.registro: "autostop_fin_bolsa"}
         if c == "confirmar":
             return {self.registro: "confirmacion_enfermero"}
+        if c == "reanudar":
+            return {self.ajustar: s.objetivo, self.registro: "reanudacion_post_bolsa"}
         return {}
 
 
@@ -421,6 +433,7 @@ EVENTO_A_MODO = {
     "fin_bolsa":          "bolsa",
     "autostop_fin_bolsa": "idle",
     "confirmacion_enfermero": "idle",
+    "reanudacion_post_bolsa": "infund",  # confirmacion durante fin de bolsa
 }
 
 # Eventos que representan una detencion preventiva de la bomba (no por una

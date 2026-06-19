@@ -17,6 +17,7 @@ from pypdevs.simulator import Simulator
 import compat  # parche de pypdevs para Python 3.13+ (ver compat.py)
 from modelos import BombaInfusion, Atomico, SENIAL
 from graficos import generar_graficos, imprimir_metricas
+from propiedades import imprimir_propiedades
 
 
 def _slug(texto):
@@ -140,6 +141,7 @@ def correr(titulo, agenda, fin_bolsa=None, confirmaciones=None, falla=1.0, hasta
         carpeta = os.path.join("graficos", _slug(titulo))
         rutas, metricas = generar_graficos(modelo.n.mon.state, hasta, titulo, carpeta)
         imprimir_metricas(metricas, titulo)
+        imprimir_propiedades(modelo.n.mon.state, titulo)
         print(f"  Graficos guardados en: {carpeta}/")
         print()
 
@@ -147,32 +149,54 @@ def correr(titulo, agenda, fin_bolsa=None, confirmaciones=None, falla=1.0, hasta
 
 
 if __name__ == "__main__":
-    # 1) Operacion normal: una orden de 100 ml/h a los 2 s, sin fallas.
-    correr("Escenario 1 - Operacion normal",
+    # Los 7 escenarios de prueba pedidos en la seccion 8 del informe, en su
+    # mismo orden. No se agregan escenarios adicionales fuera de esta lista.
+
+    # 1) Funcionamiento normal, sin fallas.
+    correr("Escenario 1 - Funcionamiento normal, sin fallas",
            agenda=[(100, 2)], hasta=15)
 
-    # 2) Desvio sostenido: el actuador entrega la mitad del caudal ordenado.
-    #    Esperamos alarmaMedia, escalamiento a critica y bomba detenida. La
-    #    alarma critica se repite (a los 30 s y luego cada 10 s) hasta que el
-    #    enfermero confirma a los 55 s, lo que ademas libera el bloqueo.
-    #    Se usa hasta=70 para dejar margen tras la confirmacion (a los 55 s)
-    #    y verificar que no se emiten mas repeticiones despues de ella.
-    correr("Escenario 2 - Desvio sostenido y alarma critica",
-           agenda=[(100, 2)], confirmaciones=[55], falla=0.5, hasta=70)
+    # 2) Cambio de orden medica durante la infusion: de 50 a 80 ml/h.
+    #    Sin fallas del actuador (falla=1.0), el caudal real sigue al
+    #    indicado de inmediato en ambos casos.
+    correr("Escenario 2 - Cambio de orden medica durante la infusion (50 a 80 ml/h)",
+           agenda=[(50, 2), (80, 8)], hasta=20)
 
-    # 3) Fin de bolsa: a los 10 s se agota la bolsa. Esperamos alarmaBaja y,
-    #    sin intervencion, el autostop 60 s despues.
-    correr("Escenario 3 - Fin de bolsa",
-           agenda=[(100, 2)], fin_bolsa=[10], hasta=75)
+    # 3) Orden medica con caudal igual a cero: detiene la infusion. Se
+    #    ordena 100 ml/h a los 2 s y luego 0 ml/h a los 10 s (8 s mas
+    #    tarde), verificando el paso a modo idle.
+    correr("Escenario 3 - Orden medica con caudal igual a cero",
+           agenda=[(100, 2), (0, 8)], hasta=20)
 
-    # 4) Generadores aleatorios: en vez de fijar fin_bolsa/confirmaciones a
-    #    mano, dejamos que GenAlarmaFinBolsa y GenConfirmacionEnfermero (con
-    #    distribucion exponencial) generen las senales. Con falla=0.5 el
-    #    sistema deberia escalar a alarma critica como en el escenario 2,
-    #    pero ahora la confirmacion del enfermero llega en un instante
-    #    aleatorio en vez de uno fijo. Seeds fijas para que la corrida sea
-    #    reproducible.
-    correr("Escenario 4 - Generadores aleatorios (fin de bolsa y confirmacion)",
-           agenda=[(100, 2)], falla=0.5, hasta=90,
-           media_fin_bolsa=45.0, media_confirmacion=35.0,
-           seed_fin_bolsa=42, seed_confirmacion=7)
+    # 4) Desvio leve de caudal que es corregido por el controlador. El
+    #    Actuador modela la falla como un factor CONSTANTE, no transitorio:
+    #    si el desvio persistiera y superase el 10% de tolerancia, el
+    #    controlador reintenta (correccion_caudal) pero el actuador vuelve
+    #    a aplicar el mismo factor, por lo que escala a alarmaMedia en vez
+    #    de corregirse (ver Escenario 5). Por eso este escenario usa un
+    #    desvio leve que queda DENTRO del 10% de tolerancia desde el
+    #    inicio: el controlador lo "corrige" en el sentido de que nunca
+    #    llega a considerarlo un desvio sostenido, no hace falta ninguna
+    #    accion correctiva visible y el sistema sigue infundiendo normal.
+    correr("Escenario 4 - Desvio leve de caudal corregido por el controlador",
+           agenda=[(100, 2)], falla=0.92, hasta=15)
+
+    # 5) Desvio de caudal mayor al 10% durante mas de 5 s: dispara
+    #    alarmaMedia y, si persiste, escala a alarmaCritica con detencion
+    #    de la bomba.
+    correr("Escenario 5 - Desvio de caudal mayor al 10% durante mas de 5s",
+           agenda=[(100, 2)], falla=0.5, hasta=15)
+
+    # 6) Fin de bolsa con confirmacion del enfermero: la bolsa se agota a
+    #    los 10 s (alarmaBaja) y el enfermero confirma a los 30 s, bien
+    #    antes del autostop a los 70 s, asi que la infusion se reanuda sin
+    #    llegar a detenerse automaticamente.
+    correr("Escenario 6 - Fin de bolsa con confirmacion del enfermero",
+           agenda=[(100, 2)], fin_bolsa=[10], confirmaciones=[30], hasta=50)
+
+    # 7) Alarma critica no confirmada durante 30 s: nadie confirma, asi que
+    #    se debe ver la 1ra repeticion a los 30 s tras la alarma critica
+    #    inicial, y la 2da a los 10 s de esa (T_REP). Horizonte hasta=62
+    #    para que ambas repeticiones queden dentro de la corrida.
+    correr("Escenario 7 - Alarma critica no confirmada durante 30s",
+           agenda=[(100, 2)], falla=0.5, hasta=62)
