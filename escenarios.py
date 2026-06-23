@@ -147,6 +147,8 @@ def correr(titulo, agenda, fin_bolsa=None, confirmaciones=None, falla=1.0, hasta
 
     return modelo
 
+# 1 hora 3600
+# 1 dia 86400
 
 if __name__ == "__main__":
     # Los 7 escenarios de prueba pedidos en la seccion 8 del informe, en su
@@ -154,19 +156,19 @@ if __name__ == "__main__":
 
     # 1) Funcionamiento normal, sin fallas.
     correr("Escenario 1 - Funcionamiento normal, sin fallas",
-           agenda=[(100, 2)], hasta=15)
+           agenda=[(100, 2)], hasta=3600)
 
     # 2) Cambio de orden medica durante la infusion: de 50 a 80 ml/h.
     #    Sin fallas del actuador (falla=1.0), el caudal real sigue al
     #    indicado de inmediato en ambos casos.
     correr("Escenario 2 - Cambio de orden medica durante la infusion (50 a 80 ml/h)",
-           agenda=[(50, 2), (80, 8)], hasta=20)
+           agenda=[(50, 2), (80, 900), (50, 1800), (30, 200)], hasta=3600)
 
     # 3) Orden medica con caudal igual a cero: detiene la infusion. Se
     #    ordena 100 ml/h a los 2 s y luego 0 ml/h a los 10 s (8 s mas
     #    tarde), verificando el paso a modo idle.
     correr("Escenario 3 - Orden medica con caudal igual a cero",
-           agenda=[(100, 2), (0, 8)], hasta=20)
+           agenda=[(100, 2), (0, 2700)], hasta=3600)
 
     # 4) Desvio leve de caudal que es corregido por el controlador. El
     #    Actuador modela la falla como un factor CONSTANTE, no transitorio:
@@ -179,24 +181,24 @@ if __name__ == "__main__":
     #    llega a considerarlo un desvio sostenido, no hace falta ninguna
     #    accion correctiva visible y el sistema sigue infundiendo normal.
     correr("Escenario 4 - Desvio leve de caudal corregido por el controlador",
-           agenda=[(100, 2)], falla=0.92, hasta=15)
+           agenda=[(100, 2)], falla=0.92, hasta=3600)
 
     # 5) Desvio de caudal mayor al 10% durante mas de 5 s: dispara
     #    alarmaMedia y, si persiste, escala a alarmaCritica con detencion
     #    de la bomba.
     correr("Escenario 5 - Desvio de caudal mayor al 10% durante mas de 5s",
-           agenda=[(100, 2)], falla=0.5, hasta=15)
+           agenda=[(100, 2)], falla=0.5, hasta=3600)
 
     # 6) Fin de bolsa con confirmacion del enfermero: la bolsa se agota a
-    #    los 10 s (alarmaBaja) y el enfermero confirma a los 30 s, bien
+    #    los 10 s (alarmaBaja) y el enfermero confirma a los 30 min, bien
     #    antes del autostop a los 70 s, asi que la infusion se reanuda sin
     #    llegar a detenerse automaticamente.
     correr("Escenario 6 - Fin de bolsa con confirmacion del enfermero",
-           agenda=[(100, 2)], fin_bolsa=[10], confirmaciones=[30], hasta=50)
+           agenda=[(100, 2)], fin_bolsa=[1800], confirmaciones=[1805], hasta=3600)
 
     # 7) Alarma critica no confirmada durante 30 s: nadie confirma, asi que
     #    se debe ver la 1ra repeticion a los 30 s tras la alarma critica
     #    inicial, y la 2da a los 10 s de esa (T_REP). Horizonte hasta=62
     #    para que ambas repeticiones queden dentro de la corrida.
     correr("Escenario 7 - Alarma critica no confirmada durante 30s",
-           agenda=[(100, 2)], falla=0.5, hasta=62)
+           agenda=[(100, 2)], falla=0.5, hasta=3600)
